@@ -26,6 +26,8 @@ import os
 
   Set handler as 'main.lambda_handler', meaning this file and function named 'lambda_handler(event, context)'
 
+  This script returns the number of found valid products or Exception.
+
   Author: Okko.P. 12/2019
 """
 
@@ -39,7 +41,7 @@ def lambda_handler(event, context):
   # Configure Watcher through params
   try:
     watcher.name                      = os.environ['name']
-    watcher.area                      = os.environ['area']
+    watcher.area_code                 = int(os.environ['area_code'])
     watcher.keywords                  = os.environ['keywords'].split(",")
     watcher.price_limit_min           = int(os.environ['price_limit_min'])
     watcher.price_limit_max           = int(os.environ['price_limit_max'])
@@ -67,56 +69,20 @@ def lambda_handler(event, context):
     
 
 
-
 # This script is first run when running locally!
-
 if __name__ == '__main__':
 
   print("Running manually... calling lambda...")
 
   os.environ['name'] = "os.Lautapelit"
-  os.environ['area'] = "pirkanmaa"
-  os.environ['keywords'] = "lautapelit,korttipeli,seurapeli,lautapeli,boardgame"
+  os.environ['area_code'] = "3" 
+  os.environ['keywords'] = "lautapelit,lautapeli,korttipeli,roolipeli,seurapeli,boardgame,lauta peli,pelisetti" #"lautapelit,korttipeli,seurapeli,lautapeli,boardgame,lauta peli"
   os.environ['price_limit_min'] = "1"
   os.environ['price_limit_max'] = "300"
-  os.environ['timespan_sec'] = "300"
-  os.environ['server_time_offset_secs'] = "9000"
+  os.environ['timespan_sec'] = "100"
+  os.environ['server_time_offset_secs'] = "0"
   os.environ['recipients'] = "okkomarble@gmail.com"
 
   lambda_handler(None, None)
 
 
-
-
-
-
-
-
-
-
-
-
-
-#   ["lautapeli", "lautapelit", "lautapelejä", "boardgame", "korttipeli", "roolipeli", "seurapeli", "lauta peli"]
-
-"""
-
-  watcher = Watcher.Watcher(
-    name="Lautapelit",
-    area="pirkanmaa", 
-    keywords=["lautapeli", "lautapelit", "lautapelejä", "boardgame", "korttipeli", "roolipeli", "seurapeli", "lauta peli"],
-    timespan_sec=600,
-    price_limit=(0, 300)
-  )
-
-
-  # for testing
-  event = {
-    "resources": [
-      "arn:aws:events:us-east-1:123456789012:rule/hakuvahti"
-    ]
-  }
-
-
-
-"""

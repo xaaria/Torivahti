@@ -32,11 +32,11 @@ class AWSHandler:
     self.profile_name   = profile_name
     self.event          = event
     self.context        = context
-    self.recipients = recipients
+    self.recipients     = recipients
     
     # SES:
     if len(recipients) == 0:
-      print("0 recipients!")
+      print("[Warning] 0 recipients set!")
 
 
 
@@ -70,7 +70,7 @@ class AWSHandler:
       
       # Get the CloudWatch object that triggered this lambda function.
       # Please see: https://docs.aws.amazon.com/lambda/latest/dg/with-scheduled-events.html
-      cloudwatch    = aws_session.client('events') # was boto3?
+      cloudwatch    = aws_session.client('events')
       
       # Event dict. holds the details of the event that launced this sript. Get the CloudWatch timer schedule.
       event_arn   = self.event.get("resources")[0]  # "arn:aws:events:us-east-1:xxx:rule/hakuvahti"
@@ -152,8 +152,12 @@ class AWSHandler:
 
 class Watcher:
 
-  BASE_URL                    = "https://www.tori.fi/"
-  URL_PREFIX                  = "&cg=0&w=111&st=s&st=g&ca=18&l=0&md=th"
+  BASE_URL                    = "https://www.tori.fi"   # no leading /
+  
+  # param w contains the area ID
+  URL_PREFIX                  = "&cg=0&w=_AREA_CODE_&st=s&st=g&ca=18&l=0&md=th" # _AREA_CODE will be replaced with self.area_code
+  AREA_CODE_REPLACE           = "_AREA_CODE_" # replace me with the correct area_code
+  
   TZ                          = pytz.timezone("Europe/Helsinki")
 
   # How many seconds is the mismatch between servers. Used when comparing timestamps. This val is ADDED to tori.fi's timestamp.
@@ -162,7 +166,7 @@ class Watcher:
 
 
 
-  def __init__(self, name="Unnamed Watcher", area=None, keywords=[], timespan_sec=600, price_limit=(0, 100,000)):
+  def __init__(self, name="Unnamed Watcher", area_code=3, keywords=[], timespan_sec=600, price_limit=(0, 100,000)):
     
     if len(keywords) == 0 or keywords == None:
       print("Zero keywords (empty list) or None given!")
@@ -174,7 +178,7 @@ class Watcher:
     # ---
 
     self.name             = name
-    self.area             = area        # For example 'pirkanmaa'
+    self.area_code        = area_code # Area ID. default  3 (entire Finland). 111 pirkanmaa
     self.keywords         = list(map(lambda kw: kw.strip(), keywords) ) # remove whitspace around the kws 
     self.timespan_sec     = timespan_sec
     self.price_limit_min  = price_limit[0]
@@ -210,42 +214,49 @@ class Watcher:
       html_data   = res.read().decode("latin-1")
       bs          = BeautifulSoup(html_data, 'html.parser')
 
+
       # el is the main element of the product
-      for el in bs.find_all("a", {"class": "item_row"}):
+      # IF NO EXCEPTION IS THROWN, CHECK THAT HTML IS NOT CHANGED BY SITE OWNER
+      for el in bs.find_all("a", {"class": "item_row_flex"}):
         
-        desc_el     = el.find("div", {"class": "desc"})
+        p = Product() # Create an empty product
+        desc_el     = el.find("div", {"class": "desc_flex"})
+
+        try:
+          p.link = el["href"]
+        except Exception:
+          p.link = "Link Exception"
         
         try:
-          link = el["href"]
+          p.name        = desc_el.find("div", {"class": "li-title"}).text
         except Exception:
-          link = "Link Exception"
-        
-        try:
-          name        = desc_el.find("div", {"class": "li-title"}).text
-        except Exception:
-          name = "Name Exception"
+          p.name = "Name Exception"
         
         try:
           price_str       = desc_el.find("div", {"class": "list-details-container"}).find("p", {"class": "list_price"}).text
-          price           = int(re.search("\d{1,}", price_str)[0])
+          p.price         = int(re.search("\d{1,}", price_str)[0])
         except Exception:
-          price = None
+          p.price = None
 
         try: 
           pub_time_str      = desc_el.find("div", {"class": "date-cat-container"}).find("div", {"class": "date_image"}).text
           
           # Get the actual pub time datetime object from the string
           pub_time          = pub_date_parser.get_timestamp(pub_time_str)
+          if pub_time != None:
+            p.pub_time = pub_time
+          else:
+            print("[Info] loop break")
+            break # Exit this entire loop. If parsing fails, it's because prod. is too old and ts was not parsed.
+
   
         except Exception as e:
           print(e)
-          pub_time = None
         
-        print( str.format("'{}', {} €, {}", name, price, pub_time) )
+        print( str.format("'{}', {} â‚¬, {}", p.name, p.price, p.pub_time) )
 
         # Is this product viable? 
-        if self.is_within_timespan(pub_time) and self.is_within_pricelimit(price):
-          p = Product( name, price, link, pub_time )
+        if self.is_within_timespan(p.pub_time) and self.is_within_pricelimit(p.price):
           products.append(p)
           print( str.format("\t  Added product {} ", p) )
         else:
@@ -278,10 +289,14 @@ class Watcher:
   
   def generate_search_url(self):
 
+    # Replace area code for 
+    prefix = self.URL_PREFIX.replace( self.AREA_CODE_REPLACE , str(self.area_code), 1 )
+    
     # Replace spaces with '%20' and add "+OR+" between keywords
-    keyword_part = "+OR+".join( list(map(lambda s: s.replace(" ", "%20"), self.keywords ) ) )
+    keyword_part = "+OR+".join( list(map(lambda s: s.replace(" ", "+"), self.keywords ) ) )
     keyword_part = urllib.parse.quote_plus(keyword_part)
-    return str.format("{}{}?q={}{}", self.BASE_URL, self.area, keyword_part, self.URL_PREFIX)
+    
+    return str.format("{}/koko_suomi?q={}{}", self.BASE_URL, keyword_part, prefix)
 
 
   def is_within_pricelimit(self, price):
@@ -310,7 +325,7 @@ class Watcher:
     try:
     
       comp = (dt.datetime.now(self.TZ) - dt.timedelta(seconds=self.timespan_sec + self.server_time_offset_secs))
-      print( str.format("Comparing: {} >= {} | Offset is: {} s", ts, comp, self.timespan_sec + self.server_time_offset_secs) )
+      print( str.format("Comparing: {} >= {} | Server offset is: {} s", ts, comp, self.timespan_sec + self.server_time_offset_secs) )
       return ts >= comp
     except Exception as e:
       print(e)
@@ -319,12 +334,10 @@ class Watcher:
       return False
 
 
-
-
   def __str__(self):
     return str.format(
-      "Watcher: {}.\n\tSearch keywords: {}\n\tarea: '{}'\n\tTimespan{} s. (offset {} s.)\n\tPrice between {}-{} €.\n\tURL: {}\n", 
-      self.name, ", ".join(self.keywords), self.area, self.timespan_sec, self.server_time_offset_secs, self.price_limit_min, self.price_limit_max, self.generate_search_url()
+      "Watcher: {}.\n\tSearch keywords: {}\n\tarea code: '{}'\n\tTimespan {} s. (offset {} s.)\n\tPrice between {}-{}. \n\tURL: {}\n", 
+      self.name, ", ".join(self.keywords), self.area_code, self.timespan_sec, self.server_time_offset_secs, self.price_limit_min, self.price_limit_max, self.generate_search_url()
     )
 
 # end of class
@@ -333,7 +346,7 @@ class Watcher:
 class Product:
 
   """ Product class """
-  def __init__(self, name, price, link, pub_time):
+  def __init__(self, name=None, price=None, link=None, pub_time=None):
     self.name       = name
     self.price      = price
     self.link       = link
@@ -341,8 +354,8 @@ class Product:
 
   def __str__(self):
     
-    time = ""
+    time = "?"
     if isinstance(self.pub_time, dt.datetime) == True:
       time = self.pub_time.strftime("%d.%m. %H:%M")
 
-    return str.format("<b><a href={}>{}</a></b><a><br/>[{} €, {}]", self.link, self.name, self.price, time )
+    return str.format("<b><a href={}>{}</a></b><a><br/>[{}, {}]", self.link, self.name, self.price, time )
