@@ -6,3 +6,5 @@ tori-hakuvahti.py
 .aws/credentials
 .vscode/launch.json
 .vscode/settings.json
+venv/
+test.py

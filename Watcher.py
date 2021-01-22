@@ -7,8 +7,6 @@ import re
 import pytz
 import logging as log
 import boto3
-import pub_date_parser
-
 
 class AWSHandler:
 
@@ -164,9 +162,12 @@ class Watcher:
   # This val. can be overwritten
   server_time_offset_secs     = 0 
 
+  # Dynamo DB
+  DYNAMO_TABLE_NAME         = "lautisvahti"
+  DYNAMO_OBJ_PRIMARY_KEY    = 1234    # The default objects primary key where we store product values of the latest run
 
 
-  def __init__(self, name="Unnamed Watcher", area_code=3, keywords=[], timespan_sec=600, price_limit=(0, 100,000)):
+  def __init__(self, name="Watcher", area_code=3, keywords=[], timespan_sec=600, price_limit=(0, 100,000)):
     
     if len(keywords) == 0 or keywords == None:
       print("Zero keywords (empty list) or None given!")
@@ -185,7 +186,8 @@ class Watcher:
     self.price_limit_max  = price_limit[1]
     self.last_run         = None
 
-    
+    # Init Dynamo 
+    self.dynamo           = boto3.client('dynamodb')
     
     
   def run(self):
@@ -194,6 +196,7 @@ class Watcher:
       Runs the Watcher script.
       Returns list of products that meet the criterions
     """
+    print("Starting crawling...")
 
     if len(self.keywords) == 0:
       raise Exception("0 keywords! Can't run Watcher!")
@@ -215,10 +218,17 @@ class Watcher:
       bs          = BeautifulSoup(html_data, 'html.parser')
 
 
+      # Notice that different URL calls gives different HTML
       # el is the main element of the product
       # IF NO EXCEPTION IS THROWN, CHECK THAT HTML IS NOT CHANGED BY SITE OWNER
       for el in bs.find_all("a", {"class": "item_row_flex"}):
         
+        id = el.get('id')
+        #print("element id #", id)
+        id = int(re.search("\d{1,}", id)[0])
+        print("id as int:", id)
+        #return []
+
         p = Product() # Create an empty product
         desc_el     = el.find("div", {"class": "desc_flex"})
 
@@ -255,8 +265,8 @@ class Watcher:
         
         print( str.format("'{}', {} â‚¬, {}", p.name, p.price, p.pub_time) )
 
-        # Is this product viable? 
-        if self.is_within_timespan(p.pub_time) and self.is_within_pricelimit(p.price):
+        # Check if not already checked and if is within given price limits
+        if not self.is_already_seen(id) and self.is_within_pricelimit(p.price):
           products.append(p)
           print( str.format("\t  Added product {} ", p) )
         else:
@@ -317,28 +327,74 @@ class Watcher:
       return False
 
 
-  def is_within_timespan(self, ts):
-    
-    if ts == None: 
-      return False
-    
+
+  """
+  Gets database from AWS Dynamo to see if this product is already seen. 
+  Returns boolean. If False, an alert should be sent if meets other criteria
+
+  Dynamo DB structure is 
+  
+    run_id: {
+      NumberSet: { product ids }
+    }
+
+  Where run_id is a possible primary key for different runs 
+  - But we use the same object (aka item)
+
+  """
+  def is_already_seen(self, product_id=-1):
+
     try:
+      item = self.dynamo.get_item(TableName=self.DYNAMO_TABLE_NAME, Key={
+        'run_id': { 'N': str(self.DYNAMO_OBJ_PRIMARY_KEY) } # Number type field (N)
+      })
+
+      item = item.get('Item')
+      print( item.get('products') )
+
+      # stored as number, but is as a string in python dict, lol
+      if str(product_id) in item.get('products', {}).get('NS', {}):
+        return True
+      else:
+        return False
     
-      comp = (dt.datetime.now(self.TZ) - dt.timedelta(seconds=self.timespan_sec + self.server_time_offset_secs))
-      print( str.format("Comparing: {} >= {} | Server offset is: {} s", ts, comp, self.timespan_sec + self.server_time_offset_secs) )
-      return ts >= comp
     except Exception as e:
-      print(e)
-      return False
-    else:
-      return False
+      raise(e)
 
 
-  def __str__(self):
-    return str.format(
-      "Watcher: {}.\n\tSearch keywords: {}\n\tarea code: '{}'\n\tTimespan {} s. (offset {} s.)\n\tPrice between {}-{}. \n\tURL: {}\n", 
-      self.name, ", ".join(self.keywords), self.area_code, self.timespan_sec, self.server_time_offset_secs, self.price_limit_min, self.price_limit_max, self.generate_search_url()
+  """
+  Inserts product id to the item that keeps track of seen products
+  """
+  def insert_prodcut_dynamo(self, product_id):
+
+    dynamo  = boto3.resource('dynamodb')
+    table   = dynamo.Table(self.DYNAMO_TABLE_NAME)
+
+    item = self.dynamo.get_item(TableName=self.DYNAMO_TABLE_NAME, Key={
+      'run_id': { 'N': str(self.DYNAMO_OBJ_PRIMARY_KEY) } # Number type field (N)
+    })
+
+    # Append old value list
+    print(item)
+    prods = item.get('Item').get('products', {}).get('NS', []) # Comes as "NS": ["1234", "567"]
+
+    # Append and change to set of numbers
+    prods.append(product_id)
+    prods = list(map(lambda el: int(el), prods) )
+    set_ = set(prods)
+
+    response = table.update_item(
+      Key={
+        'run_id': self.DYNAMO_TABLE_NAME
+      },
+      UpdateExpression="SET products=:prods",
+      ExpressionAttributeValues={
+        ':prods': set_
+      },
+      ReturnValues="UPDATED_NEW"
     )
+    return response
+
 
 # end of class
 
@@ -346,7 +402,8 @@ class Watcher:
 class Product:
 
   """ Product class """
-  def __init__(self, name=None, price=None, link=None, pub_time=None):
+  def __init__(self, id=None, name=None, price=None, link=None, pub_time=None):
+    self.id         = id
     self.name       = name
     self.price      = price
     self.link       = link

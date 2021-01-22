@@ -42,11 +42,11 @@ def lambda_handler(event, context):
   try:
     watcher.name                      = os.environ['name']
     watcher.area_code                 = int(os.environ['area_code'])
-    watcher.keywords                  = os.environ['keywords'].split(",")
-    watcher.price_limit_min           = int(os.environ['price_limit_min'])
+    watcher.keywords                  = os.environ['keywords'].split(",") # array of keywords
+    watcher.price_limit_min           = int(os.environ['price_limit_min']) 
     watcher.price_limit_max           = int(os.environ['price_limit_max'])
     watcher.timespan_sec              = int( os.environ['timespan_sec'] )
-    
+
     # Confifure AWS Handler
     aws_handler.recipients            = os.environ['recipients'].split(",")
     
@@ -60,7 +60,7 @@ def lambda_handler(event, context):
   print( watcher )
   print( aws_handler )
 
-  aws_handler = Watcher.AWSHandler(watcher, None, event, context, ["okkomarble@gmail.com"])
+  aws_handler = Watcher.AWSHandler(watcher, None, event, context, aws_handler.recipients)
   products = aws_handler.run()
   print( str.format("Returned: {}", products) )
 
